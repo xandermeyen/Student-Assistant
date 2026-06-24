@@ -45,7 +45,16 @@ for (const col of [
   'repetitions INTEGER DEFAULT 0',
   'due_date TEXT DEFAULT NULL',
 ]) {
-  try { db.exec(`ALTER TABLE flashcards ADD COLUMN ${col}`); } catch {}
+  try { db.exec(`ALTER TABLE flashcards ADD COLUMN ${col}`); } catch (err) {
+    if (!err.message.includes('duplicate column')) console.warn('Migration warning:', err.message);
+  }
 }
+
+// Indexes for columns used in WHERE and ORDER BY clauses
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_flashcards_topic_id ON flashcards(topic_id);
+  CREATE INDEX IF NOT EXISTS idx_flashcards_due_date  ON flashcards(due_date);
+  CREATE INDEX IF NOT EXISTS idx_reviews_log_date     ON reviews_log(reviewed_at);
+`);
 
 export default db;

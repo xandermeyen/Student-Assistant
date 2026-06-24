@@ -4,11 +4,11 @@ import 'dotenv/config';
 import multer from 'multer';
 import { createRequire } from 'module';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import db from './db.js';
 
 // pdf-parse is CommonJS, import from the lib path directly to skip its test-file side effect
 const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse/lib/pdf-parse.js');
-import db from './db.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -19,9 +19,17 @@ app.use(express.json());
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+// JSON model: used for structured generation (flashcards). Forces Gemini to return valid JSON.
 const model = genAI.getGenerativeModel({
   model: 'gemini-2.5-flash',
   generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
+});
+
+// Text model: used for free-form responses (explanations). No JSON constraint.
+const textModel = genAI.getGenerativeModel({
+  model: 'gemini-2.5-flash',
+  generationConfig: { temperature: 0.3 },
 });
 
 // --- SM-2 ---
@@ -67,6 +75,7 @@ app.post('/api/parse-pdf', upload.single('pdf'), async (req, res) => {
 app.post('/api/generate', async (req, res) => {
   const { text } = req.body;
   if (!text || text.trim().length === 0) return res.status(400).json({ error: 'Please paste some text first.' });
+  if (text.length > 20000) return res.status(400).json({ error: 'Text is too long. Keep it under 20,000 characters.' });
 
   const prompt = `You are an expert study assistant. Read the text below and create 5-10 high-quality flashcards for a student who wants to memorize and understand the material.
 
@@ -138,6 +147,9 @@ app.post('/api/topics', (req, res) => {
   const { name, flashcards } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'Topic name is required.' });
   if (!flashcards || flashcards.length === 0) return res.status(400).json({ error: 'No flashcards to save.' });
+  if (flashcards.some(c => !c.question?.trim() || !c.answer?.trim())) {
+    return res.status(400).json({ error: 'Every card must have a question and an answer.' });
+  }
   const save = db.transaction(() => {
     const { lastInsertRowid } = db.prepare('INSERT INTO topics (name) VALUES (?)').run(name.trim());
     const insertCard = db.prepare('INSERT INTO flashcards (topic_id, question, answer) VALUES (?, ?, ?)');
@@ -217,6 +229,7 @@ app.delete('/api/topics/:id', (req, res) => {
 
 app.post('/api/cards/:id/review', (req, res) => {
   const { correct } = req.body;
+  if (typeof correct !== 'boolean') return res.status(400).json({ error: 'correct must be true or false.' });
   const card = db.prepare('SELECT * FROM flashcards WHERE id = ?').get(req.params.id);
   if (!card) return res.status(404).json({ error: 'Card not found.' });
 
@@ -241,6 +254,7 @@ app.post('/api/cards/:id/review', (req, res) => {
 app.post('/api/explain', async (req, res) => {
   const { question, answer } = req.body;
   if (!question || !answer) return res.status(400).json({ error: 'Question and answer required.' });
+  if (question.length > 2000 || answer.length > 2000) return res.status(400).json({ error: 'Input too long.' });
 
   const prompt = `A student got this flashcard question wrong in a quiz.
 
@@ -250,7 +264,7 @@ Correct answer: ${answer}
 In 2-3 clear sentences, explain why this is the correct answer and help the student understand the concept. Be direct and educational, no introduction needed.`;
 
   try {
-    const result = await model.generateContent(prompt);
+    const result = await textModel.generateContent(prompt);
     res.json({ explanation: result.response.text().trim() });
   } catch (err) {
     console.error('Explain error:', err.message);
