@@ -129,9 +129,12 @@ export default function App() {
   // Due banner
   const [bannerDismissed, setBannerDismissed] = useState(false);
 
+  // Backend status
+  const [backendOnline, setBackendOnline] = useState(true);
+
   // Topic management
   const [menuOpenId, setMenuOpenId] = useState(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null); // { id, name, timer }
   const [editingId, setEditingId] = useState(null);
   const [editingName, setEditingName] = useState('');
 
@@ -148,7 +151,14 @@ export default function App() {
   }, [cooldown]);
 
   async function loadTopics() {
-    try { const res = await fetch('/api/topics'); const data = await res.json(); setTopics(data.topics); } catch {}
+    try {
+      const res = await fetch('/api/topics');
+      const data = await res.json();
+      setTopics(data.topics);
+      setBackendOnline(true);
+    } catch {
+      setBackendOnline(false);
+    }
   }
 
   async function loadStats() {
@@ -323,9 +333,32 @@ export default function App() {
     } catch { setGenError('Something went wrong. Is the backend running?'); setGenStatus('idle'); }
   }
 
-  async function deleteTopic(id) {
-    await fetch(`/api/topics/${id}`, { method: 'DELETE' });
-    setConfirmDeleteId(null); setMenuOpenId(null); loadTopics();
+  function softDeleteTopic(id, name) {
+    setMenuOpenId(null);
+    setTopics(prev => prev.filter(t => t.id !== id)); // optimistic remove
+    const timer = setTimeout(async () => {
+      await fetch(`/api/topics/${id}`, { method: 'DELETE' });
+      setPendingDelete(null);
+    }, 5000);
+    setPendingDelete({ id, name, timer });
+  }
+
+  function undoDelete() {
+    clearTimeout(pendingDelete.timer);
+    setPendingDelete(null);
+    loadTopics(); // restore
+  }
+
+  async function exportAllData() {
+    const res = await fetch('/api/export');
+    const data = await res.json();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `recall-backup-${new Date().toLocaleDateString('en-CA')}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 100);
   }
 
   async function renameTopic(id) {
@@ -448,6 +481,7 @@ export default function App() {
                 </p>
               </div>
               <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                <button className="import-btn" onClick={exportAllData} title="Download a backup of all your topics and cards">Export all</button>
                 <label className="import-btn" title="Import a topic from a .json file">
                   Import topic
                   <input type="file" accept=".json" style={{ display: 'none' }} onChange={e => { if (e.target.files[0]) importTopic(e.target.files[0]); e.target.value = ''; }} />
@@ -455,6 +489,12 @@ export default function App() {
                 <button className="accent-btn" onClick={goCreate}><span className="plus">+</span> New topic</button>
               </div>
             </div>
+
+            {!backendOnline && (
+              <div className="offline-banner">
+                Cannot reach the backend. Make sure it is running with <code>pnpm dev</code> and refresh.
+              </div>
+            )}
 
             {importError && <div className="error-box" style={{ marginTop: '12px' }}>{importError}</div>}
 
@@ -537,22 +577,14 @@ export default function App() {
                                   <div className="topic-menu">
                                     <button className="menu-item" onClick={() => { setEditingId(t.id); setEditingName(t.name); setMenuOpenId(null); }}>Rename</button>
                                     <button className="menu-item" onClick={() => { exportTopic(t.id, t.name); setMenuOpenId(null); }}>Export</button>
-                                    <button className="menu-item menu-item-danger" onClick={() => { setConfirmDeleteId(t.id); setMenuOpenId(null); }}>Delete</button>
+                                    <button className="menu-item menu-item-danger" onClick={() => softDeleteTopic(t.id, t.name)}>Delete</button>
                                   </div>
                                 )}
                               </div>
                             </div>
                           </div>
 
-                          {confirmDeleteId === t.id ? (
-                            <div className="delete-confirm">
-                              <p>Delete this topic and all its cards?</p>
-                              <div className="delete-confirm-actions">
-                                <button className="cancel-btn" onClick={() => setConfirmDeleteId(null)}>Cancel</button>
-                                <button className="danger-btn" onClick={() => deleteTopic(t.id)}>Yes, delete</button>
-                              </div>
-                            </div>
-                          ) : (
+                          {(
                             <>
                               {/* Mastery bar */}
                               <div className="mastery-row">
@@ -991,6 +1023,15 @@ export default function App() {
         )}
 
       </main>
+
+      {/* Undo delete toast */}
+      {pendingDelete && (
+        <div className="undo-toast">
+          <span>"{pendingDelete.name}" will be deleted.</span>
+          <button className="undo-btn" onClick={undoDelete}>Undo</button>
+        </div>
+      )}
+
     </div>
   );
 }

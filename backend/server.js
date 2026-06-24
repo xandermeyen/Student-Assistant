@@ -273,6 +273,20 @@ In 2-3 clear sentences, explain why this is the correct answer and help the stud
   }
 });
 
+// --- Backup export ---
+
+app.get('/api/export', (req, res) => {
+  const topics = db.prepare('SELECT * FROM topics ORDER BY created_at').all();
+  const data = topics.map(topic => ({
+    name: topic.name,
+    created_at: topic.created_at,
+    flashcards: db.prepare(
+      'SELECT question, answer FROM flashcards WHERE topic_id = ? ORDER BY id'
+    ).all(topic.id),
+  }));
+  res.json({ topics: data, exported_at: new Date().toISOString() });
+});
+
 // --- Stats (streak + weak cards) ---
 
 app.get('/api/stats', (req, res) => {

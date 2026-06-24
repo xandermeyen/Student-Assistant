@@ -1,0 +1,10 @@
+{
+  "name": "recall",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently --names be,fe --prefix-colors green,cyan \"pnpm --dir backend dev\" \"pnpm --dir frontend dev\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
