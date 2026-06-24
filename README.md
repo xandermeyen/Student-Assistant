@@ -1,6 +1,6 @@
 # Recall
 
-A personal study assistant that turns your notes and PDFs into flashcards, quizzes, and spaced-repetition review sessions — powered by Google Gemini AI.
+A personal study assistant that turns your notes and PDFs into flashcards, quizzes, and spaced-repetition review sessions, powered by Google Gemini AI.
 
 ## Features
 
