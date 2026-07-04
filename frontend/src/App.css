@@ -319,26 +319,6 @@ textarea { resize: vertical; }
   margin-top: 10px;
 }
 
-/* Delete confirmation */
-.delete-confirm {
-  margin-top: 12px;
-  padding: 12px;
-  background: #fef2f2;
-  border: 1px solid #fca5a5;
-  border-radius: 8px;
-}
-
-.delete-confirm p {
-  font-size: 13px;
-  color: #7f1d1d;
-  margin-bottom: 10px;
-}
-
-.delete-confirm-actions {
-  display: flex;
-  gap: 8px;
-}
-
 .cancel-btn {
   padding: 7px 14px;
   font-size: 13px;
@@ -352,18 +332,6 @@ textarea { resize: vertical; }
 
 .cancel-btn:hover { background: var(--bg); }
 
-.danger-btn {
-  padding: 7px 14px;
-  font-size: 13px;
-  font-weight: 600;
-  border: none;
-  border-radius: 7px;
-  background: #dc2626;
-  color: #fff;
-  cursor: pointer;
-}
-
-.danger-btn:hover { background: #b91c1c; }
 
 .topic-title { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
 .topic-count { font-size: 12px; color: var(--dimmer); white-space: nowrap; padding-top: 2px; }

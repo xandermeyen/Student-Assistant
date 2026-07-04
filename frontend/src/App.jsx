@@ -572,7 +572,7 @@ export default function App() {
                             <div className="topic-card-right">
                               <span className="topic-count">{t.card_count} cards</span>
                               <div className="topic-menu-wrap">
-                                <button className="topic-menu-btn" onClick={() => { setMenuOpenId(menuOpenId === t.id ? null : t.id); setConfirmDeleteId(null); setEditingId(null); }}>&#8943;</button>
+                                <button className="topic-menu-btn" onClick={() => { setMenuOpenId(menuOpenId === t.id ? null : t.id); setEditingId(null); }}>&#8943;</button>
                                 {menuOpenId === t.id && (
                                   <div className="topic-menu">
                                     <button className="menu-item" onClick={() => { setEditingId(t.id); setEditingName(t.name); setMenuOpenId(null); }}>Rename</button>
@@ -584,8 +584,7 @@ export default function App() {
                             </div>
                           </div>
 
-                          {(
-                            <>
+                          <>
                               {/* Mastery bar */}
                               <div className="mastery-row">
                                 <div className="mastery-bar-wrap">
@@ -613,8 +612,7 @@ export default function App() {
                                   <button className="accent-btn" style={{ padding: '6px 14px', fontSize: '13px' }} onClick={() => renameTopic(t.id)}>Save</button>
                                 </div>
                               )}
-                            </>
-                          )}
+                          </>
                         </div>
                       );
                     })}
