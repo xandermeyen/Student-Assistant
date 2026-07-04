@@ -50,6 +50,11 @@ for (const col of [
   }
 }
 
+// Exam mode: optional exam date per topic (added after Stage 8)
+try { db.exec('ALTER TABLE topics ADD COLUMN exam_date TEXT DEFAULT NULL'); } catch (err) {
+  if (!err.message.includes('duplicate column')) console.warn('Migration warning:', err.message);
+}
+
 // Indexes for columns used in WHERE and ORDER BY clauses
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_flashcards_topic_id ON flashcards(topic_id);

@@ -32,10 +32,15 @@ const textModel = genAI.getGenerativeModel({
   generationConfig: { temperature: 0.3 },
 });
 
+// Today's date as YYYY-MM-DD in the server's local timezone
+const localToday = () => new Date().toLocaleDateString('en-CA');
+
 // --- SM-2 ---
-function sm2(card, correct) {
-  const quality = correct ? 5 : 1;
+// quality: 1 = missed, 3 = almost, 5 = got it.
+// If the topic has an exam date, cards are never scheduled past it.
+function sm2(card, quality, examDate) {
   let { easiness_factor, interval_days, repetitions } = card;
+
   if (quality < 3) {
     repetitions = 0;
     interval_days = 1;
@@ -45,11 +50,17 @@ function sm2(card, correct) {
     else interval_days = Math.round(interval_days * easiness_factor);
     repetitions += 1;
   }
+
   easiness_factor += 0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02);
   easiness_factor = Math.max(1.3, easiness_factor);
+
   const due = new Date();
   due.setDate(due.getDate() + interval_days);
-  const due_date = due.toISOString().split('T')[0];
+  let due_date = due.toLocaleDateString('en-CA');
+
+  const today = localToday();
+  if (examDate && today < examDate && due_date > examDate) due_date = examDate;
+
   return { easiness_factor, interval_days, repetitions, due_date };
 }
 
@@ -106,151 +117,6 @@ ${text}`;
   }
 });
 
-// --- Topics ---
-
-app.get('/api/topics', (req, res) => {
-  const today = new Date().toISOString().split('T')[0];
-  const topics = db.prepare(`
-    SELECT t.id, t.name, t.created_at,
-           COUNT(f.id) AS card_count,
-           SUM(CASE WHEN f.due_date IS NULL OR f.due_date <= ? THEN 1 ELSE 0 END) AS due_count,
-           AVG(CASE WHEN f.due_date IS NOT NULL THEN f.easiness_factor ELSE NULL END) AS avg_ef,
-           COUNT(CASE WHEN f.due_date IS NOT NULL THEN 1 ELSE NULL END) AS reviewed_count
-    FROM topics t
-    LEFT JOIN flashcards f ON f.topic_id = t.id
-    GROUP BY t.id
-    ORDER BY t.created_at DESC
-  `).all(today);
-  res.json({ topics });
-});
-
-app.get('/api/topics/:id', (req, res) => {
-  const topic = db.prepare('SELECT * FROM topics WHERE id = ?').get(req.params.id);
-  if (!topic) return res.status(404).json({ error: 'Topic not found.' });
-  const flashcards = db.prepare('SELECT * FROM flashcards WHERE topic_id = ? ORDER BY id').all(req.params.id);
-  res.json({ topic, flashcards });
-});
-
-app.get('/api/topics/:id/due', (req, res) => {
-  const today = new Date().toISOString().split('T')[0];
-  const topic = db.prepare('SELECT * FROM topics WHERE id = ?').get(req.params.id);
-  if (!topic) return res.status(404).json({ error: 'Topic not found.' });
-  const flashcards = db.prepare(`
-    SELECT * FROM flashcards
-    WHERE topic_id = ? AND (due_date IS NULL OR due_date <= ?)
-    ORDER BY COALESCE(due_date, '1900-01-01')
-  `).all(req.params.id, today);
-  res.json({ topic, flashcards });
-});
-
-app.post('/api/topics', (req, res) => {
-  const { name, flashcards } = req.body;
-  if (!name || !name.trim()) return res.status(400).json({ error: 'Topic name is required.' });
-  if (!flashcards || flashcards.length === 0) return res.status(400).json({ error: 'No flashcards to save.' });
-  if (flashcards.some(c => !c.question?.trim() || !c.answer?.trim())) {
-    return res.status(400).json({ error: 'Every card must have a question and an answer.' });
-  }
-  const save = db.transaction(() => {
-    const { lastInsertRowid } = db.prepare('INSERT INTO topics (name) VALUES (?)').run(name.trim());
-    const insertCard = db.prepare('INSERT INTO flashcards (topic_id, question, answer) VALUES (?, ?, ?)');
-    for (const card of flashcards) insertCard.run(lastInsertRowid, card.question, card.answer);
-    return lastInsertRowid;
-  });
-  const id = save();
-  res.json({ id, name: name.trim() });
-});
-
-// Search across topic names and card content
-app.get('/api/search', (req, res) => {
-  const q = (req.query.q || '').trim();
-  if (!q) return res.json({ topics: [], cards: [] });
-  const like = `%${q}%`;
-
-  const topics = db.prepare(`
-    SELECT id, name FROM topics WHERE name LIKE ? ORDER BY name LIMIT 8
-  `).all(like);
-
-  const cards = db.prepare(`
-    SELECT f.id, f.question, f.answer, t.id AS topic_id, t.name AS topic_name
-    FROM flashcards f
-    JOIN topics t ON t.id = f.topic_id
-    WHERE f.question LIKE ? OR f.answer LIKE ?
-    ORDER BY t.name, f.id LIMIT 10
-  `).all(like, like);
-
-  res.json({ topics, cards });
-});
-
-// Update a card's question and answer
-app.put('/api/cards/:id', (req, res) => {
-  const { question, answer } = req.body;
-  if (!question?.trim() || !answer?.trim()) return res.status(400).json({ error: 'Question and answer are required.' });
-  const result = db.prepare('UPDATE flashcards SET question = ?, answer = ? WHERE id = ?').run(question.trim(), answer.trim(), req.params.id);
-  if (result.changes === 0) return res.status(404).json({ error: 'Card not found.' });
-  res.json({ ok: true });
-});
-
-// Delete a single card
-app.delete('/api/cards/:id', (req, res) => {
-  const result = db.prepare('DELETE FROM flashcards WHERE id = ?').run(req.params.id);
-  if (result.changes === 0) return res.status(404).json({ error: 'Card not found.' });
-  res.json({ ok: true });
-});
-
-// Add a new card to an existing topic
-app.post('/api/topics/:id/cards', (req, res) => {
-  const { question, answer } = req.body;
-  if (!question?.trim() || !answer?.trim()) return res.status(400).json({ error: 'Question and answer are required.' });
-  const topic = db.prepare('SELECT id FROM topics WHERE id = ?').get(req.params.id);
-  if (!topic) return res.status(404).json({ error: 'Topic not found.' });
-  const { lastInsertRowid } = db.prepare(
-    'INSERT INTO flashcards (topic_id, question, answer) VALUES (?, ?, ?)'
-  ).run(req.params.id, question.trim(), answer.trim());
-  res.json({ id: lastInsertRowid, question: question.trim(), answer: answer.trim() });
-});
-
-// Rename a topic
-app.patch('/api/topics/:id', (req, res) => {
-  const { name } = req.body;
-  if (!name || !name.trim()) return res.status(400).json({ error: 'Name cannot be empty.' });
-  const result = db.prepare('UPDATE topics SET name = ? WHERE id = ?').run(name.trim(), req.params.id);
-  if (result.changes === 0) return res.status(404).json({ error: 'Topic not found.' });
-  res.json({ id: req.params.id, name: name.trim() });
-});
-
-// Delete a topic (cascades to flashcards and reviews_log via FK)
-app.delete('/api/topics/:id', (req, res) => {
-  const result = db.prepare('DELETE FROM topics WHERE id = ?').run(req.params.id);
-  if (result.changes === 0) return res.status(404).json({ error: 'Topic not found.' });
-  res.json({ ok: true });
-});
-
-// --- SRS ---
-
-app.post('/api/cards/:id/review', (req, res) => {
-  const { correct } = req.body;
-  if (typeof correct !== 'boolean') return res.status(400).json({ error: 'correct must be true or false.' });
-  const card = db.prepare('SELECT * FROM flashcards WHERE id = ?').get(req.params.id);
-  if (!card) return res.status(404).json({ error: 'Card not found.' });
-
-  const updated = sm2({
-    easiness_factor: card.easiness_factor ?? 2.5,
-    interval_days:   card.interval_days   ?? 1,
-    repetitions:     card.repetitions     ?? 0,
-  }, correct);
-
-  db.transaction(() => {
-    db.prepare(`
-      UPDATE flashcards SET easiness_factor=?, interval_days=?, repetitions=?, due_date=? WHERE id=?
-    `).run(updated.easiness_factor, updated.interval_days, updated.repetitions, updated.due_date, card.id);
-    db.prepare(`INSERT INTO reviews_log (card_id, correct) VALUES (?, ?)`).run(card.id, correct ? 1 : 0);
-  })();
-
-  res.json(updated);
-});
-
-// --- AI explanation ---
-
 app.post('/api/explain', async (req, res) => {
   const { question, answer } = req.body;
   if (!question || !answer) return res.status(400).json({ error: 'Question and answer required.' });
@@ -273,6 +139,178 @@ In 2-3 clear sentences, explain why this is the correct answer and help the stud
   }
 });
 
+// --- Topics ---
+
+app.get('/api/topics', (req, res) => {
+  const topics = db.prepare(`
+    SELECT t.id, t.name, t.created_at, t.exam_date,
+           COUNT(f.id) AS card_count,
+           SUM(CASE WHEN f.due_date IS NULL OR f.due_date <= ? THEN 1 ELSE 0 END) AS due_count,
+           AVG(CASE WHEN f.due_date IS NOT NULL THEN f.easiness_factor ELSE NULL END) AS avg_ef,
+           COUNT(CASE WHEN f.due_date IS NOT NULL THEN 1 ELSE NULL END) AS reviewed_count
+    FROM topics t
+    LEFT JOIN flashcards f ON f.topic_id = t.id
+    GROUP BY t.id
+    ORDER BY t.created_at DESC
+  `).all(localToday());
+  res.json({ topics });
+});
+
+app.get('/api/topics/:id', (req, res) => {
+  const topic = db.prepare('SELECT * FROM topics WHERE id = ?').get(req.params.id);
+  if (!topic) return res.status(404).json({ error: 'Topic not found.' });
+  const flashcards = db.prepare('SELECT * FROM flashcards WHERE topic_id = ? ORDER BY id').all(req.params.id);
+  res.json({ topic, flashcards });
+});
+
+app.get('/api/topics/:id/due', (req, res) => {
+  const topic = db.prepare('SELECT * FROM topics WHERE id = ?').get(req.params.id);
+  if (!topic) return res.status(404).json({ error: 'Topic not found.' });
+  const flashcards = db.prepare(`
+    SELECT * FROM flashcards
+    WHERE topic_id = ? AND (due_date IS NULL OR due_date <= ?)
+    ORDER BY COALESCE(due_date, '1900-01-01')
+  `).all(req.params.id, localToday());
+  res.json({ topic, flashcards });
+});
+
+// All due cards across every topic, for the global review session
+app.get('/api/due', (req, res) => {
+  const flashcards = db.prepare(`
+    SELECT f.*, t.name AS topic_name
+    FROM flashcards f
+    JOIN topics t ON t.id = f.topic_id
+    WHERE f.due_date IS NULL OR f.due_date <= ?
+    ORDER BY COALESCE(f.due_date, '1900-01-01'), t.name, f.id
+  `).all(localToday());
+  res.json({ flashcards });
+});
+
+app.post('/api/topics', (req, res) => {
+  const { name, flashcards } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: 'Topic name is required.' });
+  if (!flashcards || flashcards.length === 0) return res.status(400).json({ error: 'No flashcards to save.' });
+  if (flashcards.some(c => !c.question?.trim() || !c.answer?.trim())) {
+    return res.status(400).json({ error: 'Every card must have a question and an answer.' });
+  }
+  const save = db.transaction(() => {
+    const { lastInsertRowid } = db.prepare('INSERT INTO topics (name) VALUES (?)').run(name.trim());
+    const insertCard = db.prepare('INSERT INTO flashcards (topic_id, question, answer) VALUES (?, ?, ?)');
+    for (const card of flashcards) insertCard.run(lastInsertRowid, card.question.trim(), card.answer.trim());
+    return lastInsertRowid;
+  });
+  const id = save();
+  res.json({ id, name: name.trim() });
+});
+
+// Search across topic names and card content.
+// LIKE wildcards in the query are escaped so "50%" matches literally.
+app.get('/api/search', (req, res) => {
+  const q = (req.query.q || '').trim();
+  if (!q) return res.json({ topics: [], cards: [] });
+  const like = `%${q.replace(/[\\%_]/g, m => '\\' + m)}%`;
+
+  const topics = db.prepare(`
+    SELECT id, name FROM topics WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT 8
+  `).all(like);
+
+  const cards = db.prepare(`
+    SELECT f.id, f.question, f.answer, t.id AS topic_id, t.name AS topic_name
+    FROM flashcards f
+    JOIN topics t ON t.id = f.topic_id
+    WHERE f.question LIKE ? ESCAPE '\\' OR f.answer LIKE ? ESCAPE '\\'
+    ORDER BY t.name, f.id LIMIT 10
+  `).all(like, like);
+
+  res.json({ topics, cards });
+});
+
+// Update a topic's name and/or exam date
+app.patch('/api/topics/:id', (req, res) => {
+  const topic = db.prepare('SELECT * FROM topics WHERE id = ?').get(req.params.id);
+  if (!topic) return res.status(404).json({ error: 'Topic not found.' });
+
+  const { name, exam_date } = req.body;
+  if (name !== undefined && !name.trim()) return res.status(400).json({ error: 'Name cannot be empty.' });
+  if (exam_date !== undefined && exam_date !== null && !/^\d{4}-\d{2}-\d{2}$/.test(exam_date)) {
+    return res.status(400).json({ error: 'Exam date must be YYYY-MM-DD or null.' });
+  }
+
+  db.prepare('UPDATE topics SET name = ?, exam_date = ? WHERE id = ?').run(
+    name !== undefined ? name.trim() : topic.name,
+    exam_date !== undefined ? exam_date : topic.exam_date,
+    req.params.id,
+  );
+  res.json({ ok: true });
+});
+
+app.delete('/api/topics/:id', (req, res) => {
+  const result = db.prepare('DELETE FROM topics WHERE id = ?').run(req.params.id);
+  if (result.changes === 0) return res.status(404).json({ error: 'Topic not found.' });
+  res.json({ ok: true });
+});
+
+// --- Cards ---
+
+app.put('/api/cards/:id', (req, res) => {
+  const { question, answer } = req.body;
+  if (!question?.trim() || !answer?.trim()) return res.status(400).json({ error: 'Question and answer are required.' });
+  const result = db.prepare('UPDATE flashcards SET question = ?, answer = ? WHERE id = ?').run(question.trim(), answer.trim(), req.params.id);
+  if (result.changes === 0) return res.status(404).json({ error: 'Card not found.' });
+  res.json({ ok: true });
+});
+
+app.delete('/api/cards/:id', (req, res) => {
+  const result = db.prepare('DELETE FROM flashcards WHERE id = ?').run(req.params.id);
+  if (result.changes === 0) return res.status(404).json({ error: 'Card not found.' });
+  res.json({ ok: true });
+});
+
+app.post('/api/topics/:id/cards', (req, res) => {
+  const { question, answer } = req.body;
+  if (!question?.trim() || !answer?.trim()) return res.status(400).json({ error: 'Question and answer are required.' });
+  const topic = db.prepare('SELECT id FROM topics WHERE id = ?').get(req.params.id);
+  if (!topic) return res.status(404).json({ error: 'Topic not found.' });
+  const { lastInsertRowid } = db.prepare(
+    'INSERT INTO flashcards (topic_id, question, answer) VALUES (?, ?, ?)'
+  ).run(req.params.id, question.trim(), answer.trim());
+  res.json({ id: lastInsertRowid, question: question.trim(), answer: answer.trim() });
+});
+
+// --- SRS ---
+
+const QUALITY = { missed: 1, almost: 3, got_it: 5 };
+
+app.post('/api/cards/:id/review', (req, res) => {
+  // New API: { quality: "missed" | "almost" | "got_it" }.
+  // Old API: { correct: boolean } still accepted for compatibility.
+  let quality = QUALITY[req.body.quality];
+  if (!quality && typeof req.body.correct === 'boolean') quality = req.body.correct ? 5 : 1;
+  if (!quality) return res.status(400).json({ error: 'quality must be missed, almost, or got_it.' });
+
+  const card = db.prepare(`
+    SELECT f.*, t.exam_date FROM flashcards f
+    JOIN topics t ON t.id = f.topic_id
+    WHERE f.id = ?
+  `).get(req.params.id);
+  if (!card) return res.status(404).json({ error: 'Card not found.' });
+
+  const updated = sm2({
+    easiness_factor: card.easiness_factor ?? 2.5,
+    interval_days:   card.interval_days   ?? 1,
+    repetitions:     card.repetitions     ?? 0,
+  }, quality, card.exam_date);
+
+  db.transaction(() => {
+    db.prepare(`
+      UPDATE flashcards SET easiness_factor=?, interval_days=?, repetitions=?, due_date=? WHERE id=?
+    `).run(updated.easiness_factor, updated.interval_days, updated.repetitions, updated.due_date, card.id);
+    db.prepare('INSERT INTO reviews_log (card_id, correct) VALUES (?, ?)').run(card.id, quality >= 3 ? 1 : 0);
+  })();
+
+  res.json(updated);
+});
+
 // --- Backup export ---
 
 app.get('/api/export', (req, res) => {
@@ -290,12 +328,11 @@ app.get('/api/export', (req, res) => {
 // --- Stats (streak + weak cards) ---
 
 app.get('/api/stats', (req, res) => {
-  // Streak: count consecutive days (local time) with at least one review
   const reviewDates = db.prepare(`
     SELECT DISTINCT date(reviewed_at) AS day FROM reviews_log ORDER BY day DESC
   `).all().map(r => r.day);
 
-  const todayLocal = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local time
+  const todayLocal = localToday();
   let streak = 0;
   let expected = todayLocal;
 
@@ -308,14 +345,12 @@ app.get('/api/stats', (req, res) => {
     } else break;
   }
 
-  // Which of the last 7 days had at least one review
   const sevenDaysAgo = new Date();
   sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
   const reviewedDays = db.prepare(`
     SELECT DISTINCT date(reviewed_at) AS day FROM reviews_log WHERE date(reviewed_at) >= ?
   `).all(sevenDaysAgo.toLocaleDateString('en-CA')).map(r => r.day);
 
-  // Cards with the lowest easiness factor (most trouble) that have been reviewed at least once
   const weakCards = db.prepare(`
     SELECT f.id, f.question, f.easiness_factor, t.name AS topic_name
     FROM flashcards f
@@ -325,7 +360,6 @@ app.get('/api/stats', (req, res) => {
     LIMIT 5
   `).all();
 
-  // Total reviews done today
   const todayCount = db.prepare(`
     SELECT COUNT(*) AS count FROM reviews_log WHERE date(reviewed_at) = ?
   `).get(todayLocal).count;
